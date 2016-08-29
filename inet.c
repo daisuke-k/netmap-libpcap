@@ -128,7 +128,7 @@ dup_sockaddr(struct sockaddr *sa, size_t sa_length)
 static u_int
 get_figure_of_merit(pcap_if_t *dev)
 {
-	const char *cp, *endcp;
+	const char *cp;
 	u_int n;
 
 	if (strcmp(dev->name, "any") == 0) {
@@ -138,16 +138,19 @@ get_figure_of_merit(pcap_if_t *dev)
 		 * interfaces.
 		 */
 		n = 0x1FFFFFFF;	/* 29 all-1 bits */
+	} else {
+		/*
+		 * A number at the end of the device name string is
+		 * assumed to be a unit number.
+		 */
+		cp = dev->name + strlen(dev->name) - 1;
+		while (cp-1 >= dev->name && *(cp-1) >= '0' && *(cp-1) <= '9')
+			cp--;
+		if (*cp >= '0' && *cp <= '9')
+			n = atoi(cp);
+		else
+			n = 0;
 	}
-
-	endcp = dev->name + strlen(dev->name);
-	for (cp = dev->name; cp < endcp && !isdigit((unsigned char)*cp); ++cp)
-		continue;
-
-	if (isdigit((unsigned char)*cp))
-		n = atoi(cp);
-	else
-		n = 0;
 	if (!(dev->flags & PCAP_IF_RUNNING))
 		n |= 0x80000000;
 	if (!(dev->flags & PCAP_IF_UP))
@@ -569,7 +572,8 @@ get_if_description(const char *name)
  * Try to get a description for a given device, and then look for that
  * device in the specified list of devices.
  *
- * If we find it, add the specified address to it and return 0.
+ * If we find it, then, if the specified address isn't null, add it to
+ * the list of addresses for the device and return 0.
  *
  * If we don't find it, check whether we can open it:
  *
@@ -580,9 +584,17 @@ get_if_description(const char *name)
  *
  *     Otherwise, attempt to add an entry for it, with the specified
  *     ifnet flags and description, and, if that succeeds, add the
- *     specified address to it, set *curdev_ret to point to the new
- *     entry, and return 0, otherwise return PCAP_ERROR and set errbuf
- *     to an error message.
+ *     specified address to its list of addresses if that address is
+ *     non-null, set *curdev_ret to point to the new entry, and
+ *     return 0, otherwise return PCAP_ERROR and set errbuf to an
+ *     error message.
+ *
+ * (We can get called with a null address because we might get a list
+ * of interface name/address combinations from the underlying OS, with
+ * the address being absent in some cases, rather than a list of
+ * interfaces with each interface having a list of addresses, so this
+ * call may be the only call made to add to the list, and we want to
+ * add interfaces even if they have no addresses.)
  */
 int
 add_addr_to_iflist(pcap_if_t **alldevs, const char *name, u_int flags,
@@ -613,14 +625,24 @@ add_addr_to_iflist(pcap_if_t **alldevs, const char *name, u_int flags,
 		return (0);
 	}
 
+	if (addr == NULL) {
+		/*
+		 * There's no address to add; this entry just meant
+		 * "here's a new interface".
+		 */
+		return (0);
+	}
+
 	/*
-	 * "curdev" is an entry for this interface; add an entry for this
-	 * address to its list of addresses.
+	 * "curdev" is an entry for this interface, and we have an
+	 * address for it; add an entry for that address to the
+	 * interface's list of addresses.
 	 *
 	 * Allocate the new entry and fill it in.
 	 */
-	return (add_addr_to_dev(curdev, addr, addr_size, netmask, netmask_size,
-	    broadaddr, broadaddr_size, dstaddr, dstaddr_size, errbuf));
+	return (add_addr_to_dev(curdev, addr, addr_size, netmask,
+	    netmask_size, broadaddr, broadaddr_size, dstaddr,
+	    dstaddr_size, errbuf));
 }
 
 /*
@@ -906,7 +928,7 @@ pcap_lookupnet(device, netp, maskp, errbuf)
 	/* XXX Work around Linux kernel bug */
 	ifr.ifr_addr.sa_family = AF_INET;
 #endif
-	(void)strncpy(ifr.ifr_name, device, sizeof(ifr.ifr_name));
+	(void)strlcpy(ifr.ifr_name, device, sizeof(ifr.ifr_name));
 	if (ioctl(fd, SIOCGIFADDR, (char *)&ifr) < 0) {
 		if (errno == EADDRNOTAVAIL) {
 			(void)snprintf(errbuf, PCAP_ERRBUF_SIZE,
@@ -926,7 +948,7 @@ pcap_lookupnet(device, netp, maskp, errbuf)
 	/* XXX Work around Linux kernel bug */
 	ifr.ifr_addr.sa_family = AF_INET;
 #endif
-	(void)strncpy(ifr.ifr_name, device, sizeof(ifr.ifr_name));
+	(void)strlcpy(ifr.ifr_name, device, sizeof(ifr.ifr_name));
 	if (ioctl(fd, SIOCGIFNETMASK, (char *)&ifr) < 0) {
 		(void)snprintf(errbuf, PCAP_ERRBUF_SIZE,
 		    "SIOCGIFNETMASK: %s: %s", device, pcap_strerror(errno));
